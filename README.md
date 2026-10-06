@@ -112,3 +112,42 @@ https://www.ti.com/lit/ug/sluub65b/sluub65b.pdf
 Initial verification passed: patch application, exact reconstruction, compiled
 mock property-branch tests and shell syntax. Full Fedora module compilation and
 live battery testing were unavailable in the creation environment.
+
+## Raw gauge diagnostics
+
+If RC/FCC/SOC are zero, compare raw silicon replies to sysfs before changing
+reporting again. A matching raw zero establishes that the zero is not caused by
+the CHARGE_NOW register-selection patch; it does not identify the physical or
+configuration cause. SOH is a model estimate, not independent proof of cell
+capacity. `TimeToEmpty=0xffff` means not discharging, not 65535 minutes remaining.
+
+```bash
+sudo ./scripts/probe.sh | tee /tmp/bq27542-probe.log
+# Optional: 12 samples, 10 seconds between samples (plus read time)
+sudo ./scripts/probe.sh 12 10 | tee /tmp/bq27542-monitor.log
+```
+
+Requires i2c-tools. This Yoga Book-specific script validates the bound device,
+prints sysfs before/after, temporarily unbinds the I2C battery driver, checks
+identity, and reads standard registers plus PackConfiguration and DesignCapacity.
+Extra diagnostics include Imax, AtRate, PassedCharge and DOD0. Register values
+within a sample are sequential reads, not an atomic snapshot.
+
+Battery reporting is unavailable for the entire probe, especially when taking
+multiple samples. The script rebinds on normal exit, read failure, SIGINT and
+SIGTERM. SIGKILL/power loss cannot run cleanup; if necessary recover with:
+
+```bash
+echo i2c-bq27542 | sudo tee /sys/bus/i2c/drivers/bq27xxx-battery/bind
+```
+
+Only whitelisted Control status/identity queries are sent. No reset, unseal,
+IT_ENABLE, data-flash selection or configuration writes are performed. Query
+commands and register pointers still require I2C writes as part of reading.
+Do not run another raw I2C probe concurrently.
+
+For a charging-zero case, first capture one probe on external power. If normal
+charging completes, capture another. A short unplugged comparison can then show
+whether compensated FCC changes with charging state; save work first and reconnect
+promptly if the machine approaches shutdown. Do not perform a forced deep discharge
+or a learning cycle based on these reports alone.
