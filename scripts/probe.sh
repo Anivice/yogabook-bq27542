@@ -22,11 +22,14 @@ unbound=0
 cleanup() {
     local status=$?
     trap - EXIT
+    # A stopped tee/SSH consumer must not interrupt driver restoration.
+    trap '' PIPE
     if (( unbound )) && [[ ! -L $DRV/$DEV ]]; then
-        echo '=== rebinding kernel driver ==='
         if ! printf '%s\n' "$DEV" > "$DRV/bind"; then
-            echo "Rebind failed. Recover with: echo $DEV | sudo tee $DRV/bind" >&2
+            echo "Rebind failed. Recover with: echo $DEV | sudo tee $DRV/bind" >&2 || true
             status=1
+        else
+            echo '=== kernel driver rebound ===' >&2 || true
         fi
     fi
     exit "$status"
