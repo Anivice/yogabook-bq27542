@@ -13,9 +13,34 @@ command -v i2ctransfer >/dev/null || { echo 'Install i2c-tools first.' >&2; exit
 modprobe i2c-dev
 DRV=/sys/bus/i2c/drivers/bq27xxx-battery
 DEV=i2c-bq27542
-path=$(readlink -f "$DRV/$DEV")
-[[ -L $DRV/$DEV && $(cat "$path/name") == bq27542 && $(basename "$(dirname "$path")") == i2c-0 ]] || {
-    echo 'Expected bound bq27542 client on i2c-0; refusing to probe another device.' >&2
+# Resolve the client independently of its current driver binding.
+CLIENT=/sys/bus/i2c/devices/$DEV
+path=$(readlink -e "$CLIENT") || {
+    echo "I2C client $DEV is absent; check the platform module that creates it." >&2
+    exit 1
+}
+[[ -r $path/name && $(cat "$path/name") == bq27542 && $(basename "$(dirname "$path")") == i2c-0 ]] || {
+    echo 'Expected bq27542 client on i2c-0; refusing to probe another device.' >&2
+    exit 1
+}
+[[ -d $DRV && -w $DRV/bind && -w $DRV/unbind ]] || {
+    echo 'bq27xxx-battery driver is unavailable; load the battery modules first.' >&2
+    exit 1
+}
+if [[ -L $path/driver ]]; then
+    [[ $(readlink -e "$path/driver") == $(readlink -e "$DRV") ]] || {
+        echo "Client is bound to another driver: $(readlink -e "$path/driver")" >&2
+        exit 1
+    }
+else
+    echo 'Client is unbound; restoring bq27xxx-battery before probing.' >&2
+    printf '%s\n' "$DEV" > "$DRV/bind" || {
+        echo 'Failed to restore the driver; inspect kernel logs.' >&2
+        exit 1
+    }
+fi
+[[ -L $DRV/$DEV ]] || {
+    echo 'Binding did not create the expected driver link; inspect kernel logs.' >&2
     exit 1
 }
 unbound=0

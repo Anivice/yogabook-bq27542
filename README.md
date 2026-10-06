@@ -151,3 +151,9 @@ charging completes, capture another. A short unplugged comparison can then show
 whether compensated FCC changes with charging state; save work first and reconnect
 promptly if the machine approaches shutdown. Do not perform a forced deep discharge
 or a learning cycle based on these reports alone.
+
+The probe also handles a client left unbound by an earlier interrupted probe:
+it resolves `/sys/bus/i2c/devices/i2c-bq27542`, validates its name and bus,
+and restores the battery driver before starting. A missing client, unavailable
+driver, or client bound to another driver produces a separate error; it does
+not create a new client or detach another driver.
