@@ -174,7 +174,7 @@ for (( sample=1; sample<=count; sample++ )); do
     row PackConfiguration 0x3a raw
     row DesignCapacity 0x3c mAh
     row DODatEOC 0x62 raw
-    row Qstart 0x64 mAh
+    row Qstart 0x64 mAh signed
     row FastQmax 0x66 mAh
     row AveragePower 0x76 'raw power units (mW or cW; see Design Energy Scale)' signed
     if (( sample < count )); then sleep "$interval"; fi
