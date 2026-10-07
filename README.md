@@ -262,3 +262,65 @@ it resolves `/sys/bus/i2c/devices/i2c-bq27542`, validates its name and bus,
 and restores the battery driver before starting. A missing client, unavailable
 driver, or client bound to another driver produces a separate error; it does
 not create a new client or detach another driver.
+
+## Stream a measured discharge to another machine
+
+This logger uses the bound driver's sysfs voltage/current readings; it never
+unbinds the battery or writes gauge/charger registers. It emits JSON Lines once
+per second, including cumulative discharged mAh/Wh using trapezoidal integration
+of negative current. The design capacity is metadata, not a health estimate.
+The initial connected charger Full status is recorded as the full anchor.
+No percentage is invented. Current calibration has not been independently verified.
+
+On the receiving Linux machine, copy `scripts/receive_discharge.py`, then run:
+
+```sh
+ncat -l --recv-only 5000 | python3 -u receive_discharge.py bq-full-discharge.jsonl
+```
+
+The receiver exclusively creates a new file and fsyncs every complete record.
+Use a fresh filename each run. It prints live voltage/current/totals. Laptop
+power loss does not interrupt disk writes on this machine; the final unreceived
+sample or partial record may be lost. A receiver failure or network outage can
+still lose data. Use a stable network that does not depend on laptop USB power.
+Ensure receiver TCP port 5000 is reachable. This is an unauthenticated stream;
+use your trusted LAN/ZeroTier link.
+
+Keep the Yoga Book plugged in while starting. The false 0% reading may trigger
+UPower's critical action. For this attended test, temporarily stop and runtime
+mask UPower (this does not disable hardware battery protection):
+
+```sh
+sudo systemctl mask --runtime --now upower.service
+sudo systemd-run --unit=bq-discharge --collect --property=WorkingDirectory="$PWD" \
+    /usr/bin/bash scripts/stream-discharge.sh RECEIVER_IP 5000
+```
+
+Run from the repository root. Requires python3, ncat (Fedora package nmap-ncat),
+and systemd. The transient service survives SSH disconnection. Check its status
+with `systemctl status bq-discharge` or logs with `journalctl -u bq-discharge`.
+Wait until the receiver displays the start and full_anchor records and live
+samples, then unplug. Keep the load reasonably steady and leave the lid open.
+
+The logger ends after three samples at or below 3.250 V, or when the charger is
+reconnected. It does not power off the computer. When the receiver prints
+`voltage_endpoint`, reconnect immediately. Hardware cutoff may happen first;
+in that case reconnect once, and retain the received log. Do not restart the
+laptop repeatedly to extract more charge. An earlier stop gives a lower bound
+on usable capacity, not a full capacity measurement. Read failures and gaps longer than five
+seconds at the default interval are excluded from integration and recorded, so a gapped run cannot be
+called a complete measurement. Boundary intervals crossing charger connection
+are also excluded. Battery percentage/health do not determine the endpoint.
+
+After reconnecting (or rebooting on the charger), stop the service if necessary
+and restore UPower:
+
+```sh
+sudo systemctl stop bq-discharge.service
+sudo systemctl unmask --runtime upower.service
+sudo systemctl start upower.service
+```
+
+A reboot also removes the runtime mask. Do not leave UPower masked during
+normal use. Share the receiver's JSONL file, together with whether the run
+ended at the voltage endpoint, hardware cutoff, or an early/manual stop.
