@@ -324,3 +324,58 @@ sudo systemctl start upower.service
 A reboot also removes the runtime mask. Do not leave UPower masked during
 normal use. Share the receiver's JSONL file, together with whether the run
 ended at the voltage endpoint, hardware cutoff, or an early/manual stop.
+
+## Compare constant-current and constant-power capacity models
+
+With the cable connected, `--load-mode-experiment` tests Load Mode 1 (constant
+power) against Load Mode 0 (constant current). Load Select stays at 1. This is
+an explicit data-flash write experiment, not a confirmed capacity repair.
+The helper requires the expected unbound bus-0 BQ27542-G1 firmware 0x0201,
+unsealed state, an online BQ25890 charger, suitable voltage/temperature, and
+QEN enabled. It does not unseal the gauge.
+
+Before any configuration write it exclusively creates and fsyncs
+`/var/lib/yogabook-bq27542/load-mode-backup.json`, including the original
+32-byte IT Cfg block and selected diagnostic blocks. An existing backup
+prevents another experiment. Only subclass 80 offset 1 and its checksum are
+written. The entire resulting block is read back and compared, then one RESET
+activates the configuration. CONTROL_STATUS.LDMD must match the chosen mode.
+Five raw samples over approximately one minute capture FCC, RM, SOC, SOH,
+voltage/current and flags. Load Mode 1 is then restored and verified, with a
+second RESET. Firmware resets and normal learning can change runtime/model
+state; the backup is diagnostic evidence, not an automatic rollback of all
+learned data. Charging limits, chemistry, calibration, Qmax and resistance
+configuration are not written by the helper.
+
+Apply the patch, then run from the repository root while plugged in:
+
+```sh
+sudo systemd-run --unit=bq-load-mode --collect --property=WorkingDirectory="$PWD" \
+    --property=StandardOutput=append:/var/tmp/bq-load-mode.log \
+    --property=StandardError=append:/var/tmp/bq-load-mode.log \
+    /usr/bin/bash scripts/probe.sh --load-mode-experiment
+```
+
+The transient service survives SSH disconnection. Keep the cable connected
+until it finishes, normally within two minutes. Check with
+`systemctl status bq-load-mode.service`; inspect `/var/tmp/bq-load-mode.log`.
+A successful run reports both `original_mode_restored` and
+`experiment_complete`. Share that log. The kernel driver is unavailable
+throughout the probe and is rebound afterwards. Ordinary probe/data-flash
+modes still do not commit configuration writes.
+
+Exceptions, SIGINT, SIGTERM and SIGHUP after the first write attempt trigger
+one automatic restoration attempt; the shell waits for that attempt before
+rebinding. SIGKILL, power loss, an unplugged charger, or I2C failure can prevent
+restoration. Load Mode writes persist across reboot. After such a failure,
+connect the cable and recover using the saved backup:
+
+```sh
+sudo ./scripts/probe.sh --restore-load-mode \
+    /var/lib/yogabook-bq27542/load-mode-backup.json
+```
+
+Recovery verifies identity, backup integrity and all other bytes of the IT Cfg
+block before writing only the original mode and checksum. It does not blindly
+overwrite the entire backup. Keep the backup; do not automatically retry the
+experiment or delete it just to bypass the existing-backup guard.

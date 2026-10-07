@@ -3,6 +3,22 @@
 set -euo pipefail
 dataflash=0
 reset_gauge=0
+load_mode=0
+helper_args=()
+if [[ ${1:-} == --load-mode-experiment || ${1:-} == --restore-load-mode ]]; then
+    load_mode=1
+    if [[ $1 == --restore-load-mode ]]; then
+        [[ $# == 2 && -r $2 ]] || { echo "Usage: sudo ./scripts/probe.sh --restore-load-mode BACKUP_JSON" >&2; exit 2; }
+        helper_args=(--restore "$2")
+        shift
+    else
+        [[ $# == 1 ]] || { echo "Usage: sudo ./scripts/probe.sh --load-mode-experiment" >&2; exit 2; }
+    fi
+    shift
+    command -v python3 >/dev/null || { echo "Install python3 first." >&2; exit 1; }
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/load_mode.py"
+    [[ -r $helper ]] || { echo "Missing Load Mode helper." >&2; exit 1; }
+fi
 if [[ ${1:-} == --dataflash || ${1:-} == --reset-gauge ]]; then
     [[ $1 != --reset-gauge ]] || reset_gauge=1
     dataflash=1
@@ -59,11 +75,17 @@ fi
     exit 1
 }
 unbound=0
+helper_pid=
 cleanup() {
     local status=$?
     trap - EXIT
     # A stopped tee/SSH consumer must not interrupt driver restoration.
-    trap '' PIPE
+    trap '' PIPE INT TERM HUP
+    if [[ -n $helper_pid ]]; then
+        # Wait for the Python helper to restore Load Mode before rebinding.
+        kill -TERM "$helper_pid" 2>/dev/null || true
+        wait "$helper_pid" || true
+    fi
     if (( unbound )) && [[ ! -L $DRV/$DEV ]]; then
         if ! printf '%s\n' "$DEV" > "$DRV/bind"; then
             echo "Rebind failed. Recover with: echo $DEV | sudo tee $DRV/bind" >&2 || true
@@ -179,7 +201,17 @@ for (( sample=1; sample<=count; sample++ )); do
     row AveragePower 0x76 'raw power units (mW or cW; see Design Energy Scale)' signed
     if (( sample < count )); then sleep "$interval"; fi
 done
-if (( dataflash )); then
+if (( load_mode )); then
+    python3 "$helper" "${helper_args[@]}" &
+    helper_pid=$!
+    if wait "$helper_pid"; then
+        helper_pid=
+    else
+        result=$?
+        helper_pid=
+        exit "$result"
+    fi
+elif (( dataflash )); then
     python3 "$helper"
 fi
 printf '%s\n' "$DEV" > "$DRV/bind"
