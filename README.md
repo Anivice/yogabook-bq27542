@@ -185,6 +185,29 @@ SIGKILL, power loss, or removal of the I2C client cannot be handled by a trap.
 Probe instances now share a nonblocking lock. Do not run other raw-I2C tools
 concurrently.
 
+## Model and integrity diagnostics
+
+The ordinary probe now includes RESET_DATA (reset count), the three TI checksum
+comparisons, DODatEOC, Qstart, FastQmax and signed AveragePower. Identity and
+firmware are checked before extended reads. A 100-ms wait precedes Control
+result reads, including the checksum results (TI SLUUB65B section 10.3.2).
+
+```sh
+sudo ./scripts/probe.sh --dataflash > /tmp/bq-model.log 2>&1
+```
+
+`stored-reference-match=yes` means bit 15 is clear: the computed checksum
+matches its stored reference. A mismatch requires investigation; it does not
+by itself prove flash corruption, since reference checksums can be stale or
+not provisioned. A match does not establish that the chemistry fits this
+battery or that learned parameters are accurate. These are firmware checksum
+queries, not writes to BlockDataCheckSum (0x60).
+
+AveragePower is signed, in mW for Design Energy Scale 1 or cW for scale 10;
+the raw word is printed too. The data-flash decode also includes fast-scaling
+limits, activation SOC, load selection and OCV reset temperature threshold.
+This mode performs no reset or parameter edits.
+
 ## Raw gauge diagnostics
 
 If RC/FCC/SOC are zero, compare raw silicon replies to sysfs before changing

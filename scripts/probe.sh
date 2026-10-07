@@ -96,11 +96,12 @@ read16() {
 }
 control() {
     # Whitelist identity/status queries. Never accept arbitrary Control writes.
-    case "$1" in 0x0000|0x0001|0x0002|0x0003|0x0008|0x000c) ;;
+    case "$1" in 0x0000|0x0001|0x0002|0x0003|0x0005|0x0008|0x000c|0x0017|0x0018|0x0019) ;;
         *) echo 'Unsupported control query' >&2; return 1 ;;
     esac
     i2ctransfer -y 0 w3@0x55 0x00 "$(( $1 & 255 ))" "$(( ($1 >> 8) & 255 ))" >/dev/null
-    sleep 0.05
+    # TI specifies a 100-ms wait for checksum command results.
+    sleep 0.1
     read16 0x00
 }
 row() {
@@ -121,7 +122,7 @@ unbound=1
 printf '%s\n' "$DEV" > "$DRV/unbind"
 sleep 0.2
 echo '=== identity/control ==='
-for query in 'CONTROL_STATUS 0x0000' 'DEVICE_TYPE 0x0001' 'FW_VERSION 0x0002' 'HW_VERSION 0x0003' 'CHEM_ID 0x0008' 'DF_VERSION 0x000c'; do
+for query in 'CONTROL_STATUS 0x0000' 'DEVICE_TYPE 0x0001' 'FW_VERSION 0x0002' 'HW_VERSION 0x0003' 'RESET_DATA 0x0005' 'CHEM_ID 0x0008' 'DF_VERSION 0x000c'; do
     read -r label sub <<< "$query"
     value=$(control "$sub")
     printf '%-25s 0x%04x %7d\n' "$label" "$value" "$value"
@@ -129,6 +130,18 @@ for query in 'CONTROL_STATUS 0x0000' 'DEVICE_TYPE 0x0001' 'FW_VERSION 0x0002' 'H
         echo 'Not a BQ27542-G1; stopping.' >&2
         exit 1
     fi
+    if [[ $label == FW_VERSION ]] && (( value != 0x0201 )); then
+        echo 'Unexpected firmware; stopping before extended diagnostics.' >&2
+        exit 1
+    fi
+done
+echo '=== stored checksum comparisons ==='
+for query in 'STATIC_CHEM_CHKSUM 0x0017' 'ALL_DF_CHKSUM 0x0018' 'STATIC_DF_CHKSUM 0x0019'; do
+    read -r label sub <<< "$query"
+    value=$(control "$sub")
+    match=no
+    (( value & 32768 )) || match=yes
+    printf '%-25s 0x%04x stored-reference-match=%s\n' "$label" "$value" "$match"
 done
 for (( sample=1; sample<=count; sample++ )); do
     echo "=== raw sample $sample/$count: $(date -Is) ==="
@@ -160,6 +173,10 @@ for (( sample=1; sample<=count; sample++ )); do
     row SelfDischargeCurrent 0x38 mA signed
     row PackConfiguration 0x3a raw
     row DesignCapacity 0x3c mAh
+    row DODatEOC 0x62 raw
+    row Qstart 0x64 mAh
+    row FastQmax 0x66 mAh
+    row AveragePower 0x76 'raw power units (mW or cW; see Design Energy Scale)' signed
     if (( sample < count )); then sleep "$interval"; fi
 done
 if (( dataflash )); then
