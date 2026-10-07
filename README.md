@@ -113,6 +113,36 @@ Initial verification passed: patch application, exact reconstruction, compiled
 mock property-branch tests and shell syntax. Full Fedora module compilation and
 live battery testing were unavailable in the creation environment.
 
+## Configuration and learned-data dump
+
+```bash
+sudo ./scripts/probe.sh --dataflash > /tmp/bq-dataflash.log
+```
+
+Requires Python 3 and i2c-tools. This optional mode runs while the battery
+client is unbound, then uses the same restoration trap as the ordinary probe.
+It reads classes 48 (design/SOH settings), 64 (pack settings), 80 (load/cutoff/
+reserve settings), 82 (Qmax/learning state), 88/89 (resistance profiles), and
+104 (raw calibration). Both raw bytes and selected decoded values are included.
+Offsets are from SLUUB65B Table 16-3. Some narrative examples in that manual
+have inconsistent offsets; retain raw data for review. Energy/power fields
+are left in raw units until Design Energy Scale is interpreted.
+
+The helper validates BQ27542-G1 firmware 0x0201, requires an unbound bus-0
+client, and stops if CONTROL_STATUS says SEALED. It never sends unlock keys.
+It writes only identity/status query commands and the temporary data-flash
+access/class/block selectors (0x61, 0x3e, 0x3f). It never writes BlockData
+(0x40..0x5f), BlockDataChecksum (0x60), reset, IT_ENABLE, or calibration commands.
+Selecting a block does not commit configuration; selector state is left at the
+last block read. Every block is read twice and compared with its checksum,
+with up to three attempts if the gauge updates data during the read.
+No coherent whole-flash snapshot is promised while the gauge is operating.
+
+Use external power while collecting this diagnostic. Do not run other raw I2C
+tools concurrently. Do not run dataflash.py directly: probe.sh owns the
+unbind/rebind lifecycle. The dump does not change the kernel module and needs
+no rebuild. Send bq-dataflash.log for analysis before changing stored settings.
+
 ## Raw gauge diagnostics
 
 If RC/FCC/SOC are zero, compare raw silicon replies to sysfs before changing
@@ -141,8 +171,9 @@ SIGTERM. SIGKILL/power loss cannot run cleanup; if necessary recover with:
 echo i2c-bq27542 | sudo tee /sys/bus/i2c/drivers/bq27xxx-battery/bind
 ```
 
-Only whitelisted Control status/identity queries are sent. No reset, unseal,
-IT_ENABLE, data-flash selection or configuration writes are performed. Query
+Without `--dataflash`, only whitelisted Control status/identity queries are sent.
+No reset, unseal, IT_ENABLE, data-flash selection or configuration writes are
+performed in that mode. Query
 commands and register pointers still require I2C writes as part of reading.
 Do not run another raw I2C probe concurrently.
 

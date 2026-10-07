@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # BQ27542 query-only probe for the Yoga Book's bus 0 / address 0x55.
 set -euo pipefail
+dataflash=0
+if [[ ${1:-} == --dataflash ]]; then
+    dataflash=1
+    shift
+    command -v python3 >/dev/null || { echo 'Install python3 first.' >&2; exit 1; }
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/dataflash.py"
+    [[ -r $helper ]] || { echo 'Missing dataflash.py helper.' >&2; exit 1; }
+fi
 count=${1:-1}
 interval=${2:-10}
 if [[ $# -gt 2 || ! $count =~ ^[1-9][0-9]*$ || ! $interval =~ ^[1-9][0-9]*$ ]] ||
    (( count > 3600 || interval > 3600 )); then
-    echo 'Usage: sudo ./scripts/probe.sh [samples:1..3600] [interval-seconds:1..3600]' >&2
+    echo 'Usage: sudo ./scripts/probe.sh [--dataflash] [samples:1..3600] [interval-seconds:1..3600]' >&2
     exit 2
 fi
 [[ $EUID == 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
@@ -146,6 +154,9 @@ for (( sample=1; sample<=count; sample++ )); do
     row DesignCapacity 0x3c mAh
     if (( sample < count )); then sleep "$interval"; fi
 done
+if (( dataflash )); then
+    python3 "$helper"
+fi
 printf '%s\n' "$DEV" > "$DRV/bind"
 unbound=0
 echo "=== sysfs after probe: $(date -Is) ==="
