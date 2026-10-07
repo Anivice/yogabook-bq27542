@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
-# BQ27542 query-only probe for the Yoga Book's bus 0 / address 0x55.
+# BQ27542 diagnostic probe for the Yoga Book's bus 0 / address 0x55.
 set -euo pipefail
 dataflash=0
-if [[ ${1:-} == --dataflash ]]; then
+reset_gauge=0
+if [[ ${1:-} == --dataflash || ${1:-} == --reset-gauge ]]; then
+    [[ $1 != --reset-gauge ]] || reset_gauge=1
     dataflash=1
     shift
     command -v python3 >/dev/null || { echo 'Install python3 first.' >&2; exit 1; }
     helper="$(dirname -- "${BASH_SOURCE[0]}")/dataflash.py"
-    [[ -r $helper ]] || { echo 'Missing dataflash.py helper.' >&2; exit 1; }
+    if (( reset_gauge )); then helper="$(dirname -- "${BASH_SOURCE[0]}")/reset_gauge.py"; fi
+    [[ -r $helper ]] || { echo 'Missing diagnostic helper.' >&2; exit 1; }
 fi
 count=${1:-1}
 interval=${2:-10}
 if [[ $# -gt 2 || ! $count =~ ^[1-9][0-9]*$ || ! $interval =~ ^[1-9][0-9]*$ ]] ||
    (( count > 3600 || interval > 3600 )); then
-    echo 'Usage: sudo ./scripts/probe.sh [--dataflash] [samples:1..3600] [interval-seconds:1..3600]' >&2
+    echo 'Usage: sudo ./scripts/probe.sh [--dataflash|--reset-gauge] [samples:1..3600] [interval-seconds:1..3600]' >&2
     exit 2
 fi
 [[ $EUID == 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
 command -v i2ctransfer >/dev/null || { echo 'Install i2c-tools first.' >&2; exit 1; }
+command -v flock >/dev/null || { echo 'Install util-linux (flock) first.' >&2; exit 1; }
+# Coordinate probe instances before changing the driver binding.
+exec 9>/run/lock/yogabook-bq27542-probe.lock
+flock -n 9 || { echo 'Another probe is running.' >&2; exit 1; }
 modprobe i2c-dev
 DRV=/sys/bus/i2c/drivers/bq27xxx-battery
 DEV=i2c-bq27542
@@ -70,6 +77,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 snapshot() {
     local file
     for file in "$path"/power_supply/*/uevent; do

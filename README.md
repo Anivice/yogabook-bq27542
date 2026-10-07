@@ -143,6 +143,48 @@ tools concurrently. Do not run dataflash.py directly: probe.sh owns the
 unbind/rebind lifecycle. The dump does not change the kernel module and needs
 no rebuild. Send bq-dataflash.log for analysis before changing stored settings.
 
+## Controlled gauge reset experiment
+
+Connect the charger and leave it connected throughout this experiment:
+
+```sh
+sudo ./scripts/probe.sh --reset-gauge > /tmp/bq-reset.log 2>&1
+```
+
+This mode changes gauge runtime state: it sends the documented Control RESET
+command (0x0041) exactly once, without retries. It is a firmware reset, not a
+factory reset or a battery repair. It can change reported capacity and increments
+the gauge reset counter. See TI SLUUB65B sections 3.2.1 and 15.1.1.26.
+
+Before sending RESET, it requires the expected unbound bus-0 client, device
+0x0542 / firmware 0x0201, an unsealed gauge with Qmax updates enabled (QEN, bit 0), an online
+Mains/USB supply, battery voltage at least 4.0 V, and no significant discharge.
+It saves checksum-verified diagnostic blocks and raw measurements in a private
+`/var/tmp/bq27542-reset-*` directory, flushing the backup to disk first. The
+backup covers the same selected classes as `--dataflash`; it is not a complete
+flash image or an automatic restore file.
+
+After reset it records raw values at approximately 0, 2, 10 and 30 seconds after
+a five-second startup wait, then captures the same diagnostic blocks and reports
+changed bytes. It does not write Qmax, Ra, calibration, protection settings,
+BlockData or checksums, and does not send unseal keys or IT_ENABLE. The gauge
+itself may update stored state during normal operation; the comparison records
+those differences without attributing every change to RESET.
+
+CONTROL_STATUS QEN is bit 0; VOK is bit 1. VOK can clear after RESET and
+is not an indication that gauging is disabled. After-reset collection does not
+require either flag to stay set and records CONTROL_STATUS in each sample.
+If an earlier helper stopped with "gauging is disabled" after sending RESET,
+collect the current state with `sudo ./scripts/probe.sh --dataflash`;
+do not repeat RESET merely to complete the missing readings.
+
+Attach `/tmp/bq-reset.log`. Keep the printed backup directory as well. A reset
+failure or timeout is not retried, since the command may already have reached
+the device. The usual trap attempts to rebind on errors and catchable signals;
+SIGKILL, power loss, or removal of the I2C client cannot be handled by a trap.
+Probe instances now share a nonblocking lock. Do not run other raw-I2C tools
+concurrently.
+
 ## Raw gauge diagnostics
 
 If RC/FCC/SOC are zero, compare raw silicon replies to sysfs before changing
@@ -172,7 +214,7 @@ echo i2c-bq27542 | sudo tee /sys/bus/i2c/drivers/bq27xxx-battery/bind
 ```
 
 Without `--dataflash`, only whitelisted Control status/identity queries are sent.
-No reset, unseal, IT_ENABLE, data-flash selection or configuration writes are
+In ordinary mode, no reset, unseal, IT_ENABLE, data-flash selection or configuration writes are
 performed in that mode. Query
 commands and register pointers still require I2C writes as part of reading.
 Do not run another raw I2C probe concurrently.
