@@ -185,6 +185,15 @@ SIGKILL, power loss, or removal of the I2C client cannot be handled by a trap.
 Probe instances now share a nonblocking lock. Do not run other raw-I2C tools
 concurrently.
 
+The data-flash dump also captures Charge Termination (class 36), Integrity
+Data (class 57), and Current Thresholds (class 81). These are diagnostic reads
+using the existing block-selector whitelist and checksum verification. It
+prints taper current/voltage/window, full-charge flag thresholds, relaxation
+thresholds, and the three stored checksum references. A reference of zero may
+be unprovisioned; do not rewrite a checksum merely to make its comparison pass.
+FC Set % controls flag reporting, while valid charge termination also depends
+on taper qualification (TI SLUUB65B section 7.5).
+
 ## Model and integrity diagnostics
 
 The ordinary probe now includes RESET_DATA (reset count), the three TI checksum

@@ -54,12 +54,18 @@ class Tests(unittest.TestCase):
         self.assertEqual(sum(a[0]=='w2@0x55' for a in g.calls),9)
     def test_decode_big_endian_signed(self):
         data={cls:bytearray(32*len(blocks)) for cls,blocks in m.BLOCKS.items()}
+        data[36][0:2]=(100).to_bytes(2,'big')
+        data[36][9]=255
+        data[57][8:10]=(0x7e80).to_bytes(2,'big')
         data[82][0:2]=(4163).to_bytes(2,'big')
         data[48][16:18]=(-400).to_bytes(2,'big',signed=True)
         data[80][64:66]=(3000).to_bytes(2,'big')
         out=io.StringIO()
         with contextlib.redirect_stdout(out):m.decode(data)
         lines=out.getvalue().splitlines()
+        self.assertTrue(any('Taper Current' in l and '100' in l for l in lines))
+        self.assertTrue(any('FC Set %' in l and '-1' in l for l in lines))
+        self.assertTrue(any('Chem DF Checksum reference' in l and '32384' in l for l in lines))
         self.assertTrue(any('Qmax Cell 0' in l and '4163' in l for l in lines))
         self.assertTrue(any('SOH Load I' in l and '-400' in l for l in lines))
         self.assertTrue(any('Terminate Voltage' in l and '3000' in l for l in lines))

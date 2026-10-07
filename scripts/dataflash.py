@@ -7,7 +7,8 @@ import sys
 import time
 
 # Only diagnostic classes; never the security/key class.
-BLOCKS = {48: (0,), 64: (0,), 80: (0, 1, 2, 3), 82: (0,),
+BLOCKS = {36: (0,), 48: (0,), 57: (0,), 64: (0,),
+          80: (0, 1, 2, 3), 81: (0,), 82: (0,),
           88: (0,), 89: (0,), 104: (0,)}
 
 class Gauge:
@@ -63,6 +64,21 @@ def decode(data):
     # SLUUB65B Table 16-3 offsets. Raw blocks are also printed because the
     # manual contains inconsistent offsets in some narrative examples.
     fields = [
+        (36, 0, 2, True, 'Taper Current', 'mA'),
+        (36, 2, 2, True, 'Min Taper Capacity', 'mAh'),
+        (36, 4, 2, True, 'Taper Voltage', 'mV'),
+        (36, 6, 1, False, 'Current Taper Window', 's'),
+        (36, 9, 1, True, 'FC Set %', '% (-1: termination)'),
+        (36, 10, 1, True, 'FC Clear %', '%'),
+        (36, 11, 2, True, 'DODatEOC Delta T', '0.1 deg C'),
+        (57, 6, 2, False, 'All DF Checksum reference', 'raw checksum'),
+        (57, 8, 2, False, 'Chem DF Checksum reference', 'raw checksum'),
+        (57, 10, 2, False, 'Static DF Checksum reference', 'raw checksum'),
+        (81, 0, 2, True, 'Dsg Current Threshold', 'mA'),
+        (81, 2, 2, True, 'Chg Current Threshold', 'mA'),
+        (81, 4, 2, True, 'Quit Current', 'mA'),
+        (81, 6, 2, False, 'Dsg Relax Time', 's'),
+        (81, 8, 1, False, 'Chg Relax Time', 's'),
         (48, 0, 2, True, 'Design Voltage', 'mV'),
         (48, 12, 2, True, 'Design Capacity', 'mAh'),
         (48, 14, 2, True, 'Design Energy', 'raw energy units'),
