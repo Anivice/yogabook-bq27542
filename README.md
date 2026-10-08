@@ -82,9 +82,97 @@ Numbers change with load and time, so compare with near-simultaneous readings.
 sudo ./scripts/restore.sh
 ```
 
-This reloads Fedora's modules from their normal paths. Reboot also restores the
-normal configuration. Neither script installs files into /usr or /lib/modules,
-adds blacklists, changes the initramfs, or makes loading persistent.
+This reloads Fedora's modules from their normal paths. Without the optional
+services below, reboot also restores the normal configuration. Neither manual
+script installs files into /usr or /lib/modules, adds blacklists, changes the
+initramfs, or makes loading persistent.
+
+## Persistent module loading and consumption recording
+
+Build for the running kernel, then install and start both boot services:
+
+```sh
+make -j4
+sudo ./scripts/install-services.sh
+systemctl status yogabook-bq27542-load.service yogabook-bq27542-record.service
+sudo tail -n 10 /var/log/battery.log
+```
+
+The installer copies both modules and the existing load helper to
+`/var/lib/yogabook-bq27542/modules/$(uname -r)/`, installs the recorder under
+`/var/lib/yogabook-bq27542/bin/`, and installs service units under
+`/etc/systemd/system/`. This works with Fedora Atomic's writable `/var` and
+`/etc`. It preserves existing measurements and configuration on reinstall.
+After a kernel update, rebuild and rerun the installer for that kernel. If its
+module pair is missing or incompatible, loading fails and recording does not
+start. No files are installed into `/usr` or `/lib/modules`.
+
+`yogabook-bq27542-load.service` loads the replacement module pair at boot.
+`yogabook-bq27542-record.service` starts afterwards and survives SSH disconnects.
+It reads the bound driver's `voltage_now` and `current_now` every second, using
+trapezoidal integration of discharge power, and appends approximately every
+30 seconds. Negative battery current counts as consumption; positive current
+and zero current contribute zero. Charging time is recorded with zero usage.
+It does not query raw I2C, unbind the driver, write gauge settings, or change
+reported percentage or health.
+
+The authoritative history is `/var/log/battery.log`, a plain-text append log:
+
+```text
+# battery-log-v1: epoch_end_s duration_s energy_used_uWh
+1791446400 30 33333
+```
+
+Each data row has exactly three unsigned integer fields: the interval's end
+timestamp (UNIX epoch seconds), its measured duration (seconds, rounded to the
+nearest second, with a minimum of one for a partial interval), and discharged
+energy (micro-watt-hours). For example, 4 V at 1 A discharge for 30 seconds
+produces approximately 33333 micro-watt-hours. Sub-unit energy is carried into
+later rows within a recorder run. This is measured-current integration, with
+accuracy limited by the gauge readings and sample interval; no capacity,
+health, percentage, filtering, decay, or remaining-life estimate is produced.
+
+The recorder keeps only the active interval in memory. Downstream readers
+should accept only complete rows containing exactly three unsigned integers
+and skip comments/malformed rows. File order is append order. Epoch timestamps
+can repeat or move backwards when the wall clock changes; do not discard rows
+by blindly putting them into a map with unique timestamp keys. Elapsed duration
+uses a separate clock that includes suspend, so wall-clock corrections do not
+change the integrated energy.
+
+Missing readings and sampling gaps longer than five seconds (or three sample
+intervals if larger) end the current partial record and add a `# gap` comment.
+No energy is invented across these gaps, suspend, or service downtime. A clean
+service stop saves the final partial interval. Each append is fsynced, but
+sudden power loss can still lose the current unsaved interval or damage storage;
+fsync is not a guarantee against hardware failure. An incomplete trailing row
+is marked invalid when recording resumes. Rename-and-create rotation is
+supported; retain rotated files as part of the downstream history rather than
+discarding them. No automatic rotation or retention policy is installed.
+
+Change intervals without changing the file format:
+
+```sh
+sudoedit /etc/yogabook-bq27542-recorder.conf
+sudo systemctl restart yogabook-bq27542-record.service
+```
+
+Defaults are `BQ_RECORD_INTERVAL_SECONDS=30` and
+`BQ_SAMPLE_INTERVAL_SECONDS=1`. The record interval accepts 1..86400 seconds;
+the sample interval accepts 0.1..5 seconds and must not exceed the record
+interval. Recording works while connected or disconnected from the charger.
+To inspect failures, use `journalctl -u yogabook-bq27542-record.service`.
+
+To disable persistence and restore Fedora's modules:
+
+```sh
+sudo systemctl disable --now yogabook-bq27542-record.service yogabook-bq27542-load.service
+sudo ./scripts/restore.sh
+```
+
+Stopping the loading service alone leaves the loaded modules in place. Existing
+logs and configuration are retained. Recorder regression tests can be run with
+`python3 -m unittest discover -s scripts -p 'test_record_battery.py'`.
 
 ## Verification and later patch workflow
 

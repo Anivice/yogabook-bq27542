@@ -1,0 +1,24 @@
+[Unit]
+Description=Record Yoga Book battery discharge energy
+Requires=yogabook-bq27542-load.service
+After=yogabook-bq27542-load.service
+PartOf=yogabook-bq27542-load.service
+
+[Service]
+Type=exec
+EnvironmentFile=-/etc/yogabook-bq27542-recorder.conf
+ExecStart=/usr/bin/python3 -u /var/lib/yogabook-bq27542/bin/record_battery.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+RuntimeDirectory=yogabook-bq27542-record
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/log
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

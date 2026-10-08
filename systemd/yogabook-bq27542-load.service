@@ -1,0 +1,13 @@
+[Unit]
+Description=Load Yoga Book BQ27542 replacement battery modules
+After=systemd-modules-load.service
+Before=yogabook-bq27542-record.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bash /var/lib/yogabook-bq27542/bin/load-installed.sh
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
