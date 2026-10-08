@@ -16,7 +16,7 @@ class MemoryLog:
         self.lines = []
 
     def append(self, line):
-        self.lines.append(line)
+        self.lines.extend(line.splitlines())
 
     def rows(self):
         return [list(map(int, line.split())) for line in self.lines if not line.startswith('#')]
@@ -54,6 +54,8 @@ class IntegrationTests(unittest.TestCase):
         for second in range(31):
             recorder.push(sample(second, 1_000_000))
         self.assertEqual(log.rows(), [[1030, 30, 0]])
+        metadata = [line.split() for line in log.lines if line.startswith('# interval-v2')]
+        self.assertEqual(int(metadata[0][4]), 33333)
 
     def test_current_zero_crossings(self):
         for start, end in ((-1_000_000, 1_000_000), (1_000_000, -1_000_000)):
@@ -172,9 +174,12 @@ r.main()
         process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             deadline = time.monotonic() + 5
-            while not self.path.exists() and process.poll() is None and time.monotonic() < deadline:
+            while process.poll() is None and time.monotonic() < deadline:
+                if self.path.exists() and any(not line.startswith('#') for line in self.path.read_text().splitlines()):
+                    break
                 time.sleep(0.05)
-            self.assertTrue(self.path.exists(), 'first interval was not saved')
+            self.assertTrue(self.path.exists() and any(not line.startswith('#') for line in self.path.read_text().splitlines()),
+                            'first interval was not saved')
             rival = subprocess.run(args, capture_output=True, text=True, timeout=3)
             self.assertNotEqual(rival.returncode, 0)
             before = self.path.read_text()

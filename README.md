@@ -89,7 +89,7 @@ initramfs, or makes loading persistent.
 
 ## Persistent module loading and consumption recording
 
-Build for the running kernel, then install and start both boot services:
+Build for the running kernel, then install and start the boot services:
 
 ```sh
 make -j4
@@ -114,7 +114,8 @@ trapezoidal integration of discharge power, and appends approximately every
 30 seconds. Negative battery current counts as consumption; positive current
 and zero current contribute zero. Charging time is recorded with zero usage.
 It does not query raw I2C, unbind the driver, write gauge settings, or change
-reported percentage or health.
+reported percentage or health. The optional estimator below consumes its
+journal separately.
 
 The authoritative history is `/var/log/battery.log`, a plain-text append log:
 
@@ -130,7 +131,23 @@ energy (micro-watt-hours). For example, 4 V at 1 A discharge for 30 seconds
 produces approximately 33333 micro-watt-hours. Sub-unit energy is carried into
 later rows within a recorder run. This is measured-current integration, with
 accuracy limited by the gauge readings and sample interval; no capacity,
-health, percentage, filtering, decay, or remaining-life estimate is produced.
+health, percentage, filtering, decay, or remaining-life estimate is produced by
+the recorder itself. Charging energy, end voltage/current, and charger status
+are now included in preceding `# interval-v2` comments. The three numeric
+columns retain their original meaning and existing three-column readers work.
+`# state` comments record charger transitions; pending intervals are flushed
+before a transition is recorded. `# session` marks each recorder restart.
+
+```text
+# interval-v2 1791446430 30 25000 4200000 700000 Charging
+1791446430 30 0
+```
+
+This means 25000 micro-watt-hours entered the battery and zero were discharged
+in the interval. Metadata fields are epoch end, duration, energy entering the
+battery (uWh), end voltage (uV), end current (uA), and charger status. Status
+spaces are replaced with underscores (`Not_charging`). Voltage/current are
+end samples, while both energy values are integrated across the interval.
 
 The recorder keeps only the active interval in memory. Downstream readers
 should accept only complete rows containing exactly three unsigned integers
@@ -166,13 +183,115 @@ To inspect failures, use `journalctl -u yogabook-bq27542-record.service`.
 To disable persistence and restore Fedora's modules:
 
 ```sh
-sudo systemctl disable --now yogabook-bq27542-record.service yogabook-bq27542-load.service
+sudo systemctl disable --now yogabook-bq27542-estimate.service yogabook-bq27542-record.service yogabook-bq27542-load.service
 sudo ./scripts/restore.sh
 ```
 
 Stopping the loading service alone leaves the loaded modules in place. Existing
 logs and configuration are retained. Recorder regression tests can be run with
 `python3 -m unittest discover -s scripts -p 'test_record_battery.py'`.
+
+## Full and remaining usable-energy estimator
+
+`scripts/install-services.sh` also installs and enables
+`yogabook-bq27542-estimate.service`. No kernel-source changes are needed for
+this stage; reuse the module pair built for the running kernel. Apply the patch
+and rerun the installer, then inspect:
+
+```sh
+sudo ./scripts/install-services.sh
+systemctl status yogabook-bq27542-estimate.service
+cat /tmp/bat_full /tmp/bat_cur
+journalctl -u yogabook-bq27542-estimate.service -n 10
+```
+
+Both files contain one integer and a newline, in **micro-watt-hours**:
+`bat_full` is estimated full usable energy; `bat_cur` is estimated remaining
+usable energy, clamped to 0..full. Divide by 1000000 for Wh. Estimated percentage
+is `100 * bat_cur / bat_full`. Each output is replaced atomically and is visible
+in the host `/tmp`; the service does not use a private temporary directory.
+These are estimates, not native gauge capacity, cell health, or kernel/UPower
+percentage overrides. They survive SSH disconnection and are recreated at boot.
+
+The service reads `/sys/class/power_supply/bq25890-charger-0/status` once per
+second and opens the journal every ten seconds, processing new complete lines
+in append order. Charger-state changes trigger an additional immediate refresh.
+The recorder saves at its configured interval (30 seconds by default), so normal
+estimates can lag measured consumption by up to that interval plus the refresh
+delay. For finer updates, set `BQ_RECORD_INTERVAL_SECONDS=10` in the recorder
+configuration and restart that service; the log format is unchanged.
+
+Battery-terminal voltage times signed battery current supplies net energy.
+Negative current subtracts energy; positive current adds energy multiplied by
+the estimated charge-to-usable-energy efficiency. Laptop workload reduces
+measured positive battery current (or makes it negative), so adapter wattage,
+CPU/GPU utilization, backlight, and Halo keyboard brightness are not needed as
+proxy inputs. Battery voltage also identifies the configured low endpoint.
+Current/voltage calibration and finite sampling still limit accuracy.
+
+The initial full estimate is **8989091 uWh (8.989091 Wh)**: the total observed
+discharge in the supplied October 8 journal. That old journal contains no
+charging energy or charger anchors, and includes an 81-minute gap. Its total
+is a provisional seed, not a verified full-cycle capacity measurement; old zero
+rows cannot reconstruct charge or identify charge completion. Old rows are
+read without inventing charged energy. If startup has neither saved remaining
+energy nor a Full anchor, a simple voltage-based fraction supplies an explicitly
+uncertain initial estimate. It is not repeatedly applied while discharging.
+
+`Full` anchors remaining energy at 100%. Other charger states, including
+`Not charging`, never imply full. An interrupted charge retains the measured
+partial refill, saves it, and resumes subtracting discharge, without changing
+the full-capacity estimate or claiming a completed calibration.
+
+The usable low endpoint defaults to **3.250 V under load**, following the
+earlier attended discharge test. It is an estimation boundary, not proof of
+physical cell exhaustion or an instruction to discharge to hardware cutoff.
+On a recorded negative-current interval at/below that endpoint, remaining energy
+is anchored at zero. An early voltage sag after a Full anchor is ignored until
+at least a quarter of the prior full estimate has been delivered. Full-to-low
+measured net delivery becomes a capacity candidate; when charging next reaches
+Full, valid low-to-Full measurements update full capacity with 20% new-cycle
+weight and 80% previous estimate. Capacity learning uses the discharge candidate
+when available; otherwise it uses efficiency-adjusted refill from the low anchor.
+Thus usable capacity reflects the configured endpoint and workload, not the
+8680 mAh design rating. Voltage sag and charge losses can still bias it.
+
+Charge efficiency initially assumes **0.9**. Valid Full-to-Full round trips
+calibrate it from discharge/charge energy; a Full-to-low-to-Full cycle can use
+its measured discharge candidate. Efficiency updates also use 20% new-cycle
+weight. Ratios outside 0.5..1 are rejected, as are grossly implausible capacity
+candidates. Incomplete/suspended/restarted/rotated or legacy-only cycles do not
+teach capacity or efficiency. Gaps retain an uncertain remaining estimate until
+a new anchor; no sleep/offline consumption is fabricated. A new low or Full
+anchor can begin a fresh cycle after an earlier gap.
+
+The derived checkpoint `/var/lib/yogabook-bq27542/estimate-state.json` saves
+learned full/current energy, efficiency, cycle accumulators, and journal byte
+position after each refresh. The journal remains the measurement authority;
+checkpointing avoids rereading or subtracting already processed rows on service
+restart. The JSON `uncertain` flag and journal messages show estimate quality.
+Complete log rows are consumed once; incomplete trailing writes are retried.
+Rename-and-create rotation or truncation marks the current cycle uncertain.
+Keep historical logs; do not replace the active file with a copy of old history
+while retaining its checkpoint, which would replay that history.
+
+Configuration is `/etc/yogabook-bq27542-estimator.conf`:
+
+```text
+BQ_INITIAL_FULL_UWH=8989091
+BQ_CHARGE_EFFICIENCY=0.9
+BQ_EMPTY_UV=3250000
+```
+
+Seed and efficiency initialize new checkpoints only; learned values survive
+restarts. Changing the voltage endpoint invalidates the pending cycle. Restart
+with `sudo systemctl restart yogabook-bq27542-estimate.service`. To disable all
+boot services, include the estimator alongside the record/load services in the
+disable command. All regression tests run with:
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
 
 ## Verification and later patch workflow
 

@@ -1,0 +1,24 @@
+[Unit]
+Description=Estimate Yoga Book full and remaining battery energy
+Requires=yogabook-bq27542-record.service
+After=yogabook-bq27542-record.service
+PartOf=yogabook-bq27542-record.service
+
+[Service]
+Type=exec
+EnvironmentFile=-/etc/yogabook-bq27542-estimator.conf
+ExecStart=/usr/bin/python3 -u /var/lib/yogabook-bq27542/bin/estimate_battery.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Outputs intentionally belong to the host /tmp.
+PrivateTmp=no
+ReadWritePaths=/var/lib/yogabook-bq27542 /tmp
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

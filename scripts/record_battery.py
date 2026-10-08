@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Append measured discharge intervals; no SOC or battery-life estimation."""
+"""Append discharge rows and compatible charging/voltage/state comments."""
 import argparse
 from dataclasses import dataclass
 import fcntl
@@ -22,6 +22,7 @@ class Sample:
     elapsed_ns: int
     voltage_uV: int
     current_uA: int
+    status: str = 'Unknown'
 
     @property
     def discharge_power(self):
@@ -38,7 +39,25 @@ def read_sample(root=Path('/sys/class/power_supply')):
     if voltage <= 0:
         raise ValueError('invalid voltage reading')
     # BOOTTIME includes suspend; long gaps must not be integrated as measured.
-    return Sample(int(time.time()), time.clock_gettime_ns(time.CLOCK_BOOTTIME), voltage, current)
+    try:
+        status = (root / 'bq25890-charger-0/status').read_text().strip().replace(' ', '_')
+    except OSError:
+        status = 'Unknown'
+    if status not in ('Charging', 'Full', 'Discharging', 'Not_charging', 'Unknown'):
+        status = 'Unknown'
+    return Sample(int(time.time()), time.clock_gettime_ns(time.CLOCK_BOOTTIME), voltage, current, status)
+
+
+def integrated_power(a, b, dt, charging=False):
+    """Trapezoidal positive/negative power, split at a current zero crossing."""
+    polarity = 1 if charging else -1
+    ca, cb = polarity * a.current_uA, polarity * b.current_uA
+    pa, pb = a.voltage_uV * max(0, ca), b.voltage_uV * max(0, cb)
+    if ca > 0 > cb:
+        return pa * ca * dt // (2 * (ca - cb))
+    if cb > 0 > ca:
+        return pb * cb * dt // (2 * (cb - ca))
+    return (pa + pb) * dt // 2
 
 
 class AppendLog:
@@ -80,6 +99,7 @@ class Recorder:
         self.previous = None
         self.duration_ns = 0
         self.energy_numerator = 0
+        self.charge_numerator = 0
         self.gap_start = None
 
     def flush(self):
@@ -88,9 +108,15 @@ class Recorder:
         # Integer seconds, nearest second; an observed partial interval is >=1.
         duration = max(1, (self.duration_ns + 500_000_000) // 1_000_000_000)
         energy, remainder = divmod(self.energy_numerator, DENOMINATOR)
-        self.log.append(f'{self.previous.epoch} {duration} {energy}')
+        charged, charge_remainder = divmod(self.charge_numerator, DENOMINATOR)
+        a = self.previous
+        # Metadata precedes its row so readers never subtract a row twice while
+        # waiting for an append. Old three-column consumers skip this comment.
+        self.log.append(f'# interval-v2 {a.epoch} {duration} {charged} {a.voltage_uV} {a.current_uA} {a.status}\n'
+                        f'{a.epoch} {duration} {energy}')
         self.duration_ns = 0
         self.energy_numerator = remainder  # retain sub-uWh precision across rows
+        self.charge_numerator = charge_remainder
 
     def missing(self):
         if self.previous is not None:
@@ -103,6 +129,11 @@ class Recorder:
             gap = (current.elapsed_ns - self.gap_start.elapsed_ns) / 1e9
             self.log.append(f'# gap {self.gap_start.epoch} {current.epoch} {gap:.3f} unavailable')
             self.gap_start = None
+        if self.previous is None:
+            self.log.append(f'# state {current.epoch} {current.status}')
+            self.previous = current
+            return
+        changed = self.previous.status != current.status
         if self.previous is not None:
             dt = current.elapsed_ns - self.previous.elapsed_ns
             if dt <= 0:
@@ -111,19 +142,15 @@ class Recorder:
                 self.flush()
                 self.log.append(f'# gap {self.previous.epoch} {current.epoch} {dt/1e9:.3f} sampling')
             else:
-                # Integrate only negative current; charging produces zero use.
-                # Split a sign change at the linearly interpolated zero crossing.
                 a, b = self.previous, current
-                if a.current_uA < 0 < b.current_uA:
-                    area = a.discharge_power * (-a.current_uA) * dt // (2 * (b.current_uA - a.current_uA))
-                elif b.current_uA < 0 < a.current_uA:
-                    area = b.discharge_power * (-b.current_uA) * dt // (2 * (a.current_uA - b.current_uA))
-                else:
-                    area = (a.discharge_power + b.discharge_power) * dt // 2
-                self.energy_numerator += area
+                self.energy_numerator += integrated_power(a, b, dt)
+                self.charge_numerator += integrated_power(a, b, dt, charging=True)
                 self.duration_ns += dt
         self.previous = current
-        if self.duration_ns >= self.interval_ns:
+        if changed:
+            self.flush()
+            self.log.append(f'# state {current.epoch} {current.status}')
+        elif self.duration_ns >= self.interval_ns:
             self.flush()
 
     def finish(self):
@@ -154,6 +181,7 @@ def main():
             signal.signal(sig, lambda signum, frame: stop.set())
         recorder = Recorder(AppendLog(args.log), args.interval_seconds,
                             max(5, 3 * args.sample_seconds))
+        recorder.log.append(f'# session {int(time.time())}')
         unavailable = False
         try:
             while not stop.is_set():
